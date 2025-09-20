@@ -1,0 +1,216 @@
+
+```{r}
+
+knitr::include_graphics("imagegeneratedbyai.png")
+
+```
+
+
+Imagine living in a house where every single watt of electricity you use is meticulously recorded, each of which contributes to a vast pool of data. By analyzing this detailed household power consumption data recorded over nearly 4 years, an energy company can help customers achieve sustainable energy usage while balancing their energy generation. With predictive models, the company can optimize energy usage, forecast future consumption, and provide tailored recommendations. Your task is to use this dataset to build a model that predicts power consumption, benefiting both the energy provider and its customers.
+
+## The Data
+
+Available in `df_train.csv` and `df_test.csv`:
+
+| Column             | Type   | Description                                                                 |
+|--------------------|--------|----------------------------------------------------------------------------|
+| date               | chr    | Date of the measurement                                                    |
+| power_consumption  | dbl    | Daily power consumption (in kilowatts)                                     |
+| year               | int    | Year of the measurement                                                    |
+| semester           | int    | Semester of the measurement (1 for Jan-Jun, 2 for Jul-Dec)                 |
+| quarter            | int    | Quarter of the measurement (1 for Q1, 2 for Q2, 3 for Q3, 4 for Q4)        |
+| day_in_week        | chr    | Day of the week of the measurement (e.g., Monday, Tuesday)                 |
+| week_in_year       | int    | Week number in the year of the measurement                                 |
+| day_in_year        | int    | Day number in the year of the measurement                                  |
+| month              | int    | Month of the year of the measurement                                       |
+
+This dataset was donated to the UCI Machine Learning Repository. For detailed information about the dataset and the preprocessing steps, please refer to the [License and Data Preprocessing Details](License.ipynb) notebook.
+
+```{r}
+
+# Load necessary libraries
+suppressPackageStartupMessages(library(dplyr))
+library(lubridate) 
+library(ranger)    
+library(xgboost)   
+library(ggplot2)   
+
+# Load and inspect the training and testing datasets
+df_train <- read.csv("df_train.csv")
+df_test <- read.csv("df_test.csv")
+
+## Explore the structure of the dataset
+glimpse(df_train)
+
+# Start coding here...add as many cells as you like!
+
+```
+
+Checking the unique values of the `day_in_week` variable
+
+```{r}
+
+unique(df_train$day_in_week)
+
+
+```
+
+Reformatting the `date` variable, releveling the `day_in_week` variable for plotting, and checking ghe missing values of the
+
+```{r}
+
+df_train <- df_train %>% mutate(date = mdy(date))
+df_test <- df_test %>% mutate(date = mdy(date))
+
+df_train <- df_train %>% mutate(day_in_week = factor(day_in_week, levels = c("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")))
+df_test <- df_test %>% mutate(day_in_week = factor(day_in_week, levels = c("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")))
+
+glimpse(df_train)
+glimpse(df_test)
+
+colSums(is.na(df_train))
+colSums(is.na(df_test))
+
+```
+
+Visualizing the average annual power consumption over the year.
+
+```{r}
+
+df_train %>%
+  group_by(year) %>%
+  summarize(mean_power_consumption = mean(power_consumption, na.rm = TRUE), .groups = "drop") %>%
+  ggplot(aes(x = year, y = mean_power_consumption)) +
+  geom_line()
+
+```
+
+Visualizing the average daily power consumption over the week. 
+
+```{r}
+
+df_train %>%
+  group_by(day_in_week) %>%
+  summarize(mean_power_consumption = mean(power_consumption, na.rm = TRUE), .groups = "drop") %>%
+  ggplot(aes(x = day_in_week, y = mean_power_consumption, group = 1)) +
+  geom_line()
+
+```
+
+Visualizing the average monthly power consumption over the year.
+
+```{r}
+
+df_train %>%
+  group_by(month) %>%
+  summarize(mean_power_consumption = mean(power_consumption, na.rm = TRUE), .groups = "drop") %>%
+  ggplot(aes(x = month, y = mean_power_consumption)) +
+  geom_line() +
+  scale_x_continuous(breaks = seq(1:12))
+
+```
+
+Explanatory variables for the model
+
+```{r}
+
+exp_vars <- setdiff(names(df_train), c("date", "power_consumption"))
+exp_vars
+
+fmla <- paste("power_consumption", paste(exp_vars, collapse = "+"), sep = "~")
+print(fmla)
+
+```
+
+One-hot encoding the nominal and ordinal categorical variables. 
+
+```{r}
+
+df_train_ohe <- model.matrix(power_consumption ~ . -1, data = df_train)
+head(df_train_ohe)
+df_train_ohe_label <- df_train$power_consumption
+
+df_test_ohe <- model.matrix(power_consumption ~ . -1, data = df_test)
+head(df_test_ohe)
+df_test_ohe_label <- df_test$power_consumption
+
+```
+
+
+Converting the OHE'd train and test dataframes to matrix for model building. 
+
+```{r}
+
+df_train_ohe_dmat <- xgb.DMatrix(data = df_train_ohe, label = df_train_ohe_label)
+df_test_ohe_dmat <- xgb.DMatrix(data = df_test_ohe, label = df_test_ohe_label)
+
+```
+
+
+Building the random forest and xgboost models. 
+
+```{r}
+
+rf_model <- ranger(fmla, data = df_train, num.trees = 500)
+
+xgb_model <- xgb.train(data = df_train_ohe_dmat,
+						objective = "reg:squarederror",
+						nrounds = 500,
+						eval_metric = "rmse")
+
+```
+
+
+
+```{r}
+
+df_test <- df_test %>% mutate(
+	power_consumption_pred_rf = predict(rf_model, data = df_test)$predictions,
+	power_consumption_pred_xgb = predict(xgb_model, newdata = df_test_ohe_dmat))
+glimpse(df_test)
+
+```
+
+Comparing root mean squared error 
+
+```{r}
+
+rmse_rf <- caret::RMSE(df_test$power_consumption, df_test$power_consumption_pred_rf)
+rmse_xgb <- caret::RMSE(df_test$power_consumption, df_test$power_consumption_pred_xgb)
+
+print(rmse_rf)
+print(rmse_xgb)
+
+```
+
+
+```{r}
+
+selected_rmse <- rmse_rf
+print(selected_rmse)
+
+```
+
+Plotting the predictions made by random forest and xgboot against the actual observed values. 
+
+```{r}
+
+df_test %>% group_by(day_in_week) %>% summarize(
+	mean_daily_power_consumption = mean(power_consumption, na.rm = TRUE),
+	mean_daily_power_consumption_rf = mean(power_consumption_pred_rf, na.rm = TRUE),
+	mean_daily_power_consumption_xgb = mean(power_consumption_pred_xgb, na.rm = TRUE),
+	.groups = "drop") %>% 
+tidyr::pivot_longer(cols = starts_with("mean_"), names_to = "type_of_value", values_to = "value") %>% 
+ggplot(aes(x = day_in_week, y = value, group = type_of_value, color = type_of_value)) + geom_line()
+
+```
+
+
+```{r}
+
+trend_similarity <- as.character("Yes")
+
+```
+
+
+
